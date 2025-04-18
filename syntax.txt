@@ -1,0 +1,38 @@
+expr
+    123
+    :xyz
+    Nominal {}
+    Nominal::Variant
+    (x -> e)
+    f(x)
+    match subject { arm* }
+    loop {}
+    break [value] ['label]
+    continue ['label]
+    fn xyz([param...]) -> R {}
+
+pattern
+
+statement
+    let p[ann] = e [else { ... }]
+    r = e
+    e
+    return [value]
+    break [value] ['label]
+    continue ['label]
+    match e { arm[,] }
+    if = if e { ... } [else (if | if_let)] [else { ... }]
+    if_let = if let p = e { ... } [else (if | if_let)] [else { ... }]
+    if_not_let = if !let p = e { ... } [else (if | if_let)] [else { ... }]
+    ['label:] loop { ... }
+    ['label:] while e { ... }
+    ['label:] for p in e { ... } [else { ... }]
+    item
+        enum name { ... }
+        struct name { ... }
+        type name = e
+        trait name { ... }
+        fn xyz(x[ann], y[ann]) [-> e] { ... }
+    use path_segment
+        path_segment = name [as name] [::path_segment] | { ... }
+    

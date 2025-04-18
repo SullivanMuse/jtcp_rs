@@ -2,19 +2,51 @@ use std::{collections::HashMap, hash::Hash, rc::Rc};
 
 type Id = Rc<str>;
 
+enum Error {
+    Undeclared,
+}
+
+type Result<T> = Result<T, Error>;
+
 enum Statement {
     Let(Id, Expr),
     Assign(Id, Expr),
     Expr(Expr),
 
     // non-capturing unary function
-    Fn(Id, Expr),
+    Fn(Rc<str>, Id, Expr),
+}
+
+impl Statement {
+    fn infer(&self, context: &mut Context) -> Result<Type> {
+        match self {
+            Self::Let(id, expr) => {
+                let ty = expr.infer(context)?;
+                context.insert(id.clone(), ty);
+            }
+
+            Self::Assign(id, expr) => {
+                let ty = expr.infer(context)?;
+                context.get(&id);
+            }
+
+            Self::Expr(expr) => { expr.infer(context) }
+
+            Self::Fn(name, param, expr) => {
+                context.push();
+
+                context.pop();
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Expr {
     Int(u64),
     Block(Vec<Statement>),
+    Fn(Id, Expr),
+    Call(Box<Self>, Box<Self>),
 }
 
 impl Expr {
@@ -53,7 +85,7 @@ enum Type {
 }
 
 struct Context {
-    var_count: usize,
+    type_var_count: usize,
     functions: Vec<HashMap<Id, TypeScheme>>,
     scopes: Vec<HashMap<Id, Type>>,
     errors: Vec<()>,
@@ -62,10 +94,21 @@ struct Context {
 impl Context {
     fn new() -> Self {
         Self {
-            var_count: 0,
+            type_var_count: 0,
             functions: vec![HashMap::new()],
             scopes: vec![HashMap::new()],
+            errors: vec![],
         }
+    }
+
+    fn push() {
+        self.functions.push(HashMap::new());
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop() {
+        self.functions.pop();
+        self.scopes.pop();
     }
 
     fn fresh(&mut self) -> Type {
@@ -74,10 +117,35 @@ impl Context {
         Type::Var(index)
     }
 
+    fn get(&self) -> Result<Type> {
+        for function_scope in self.functions.iter().rev() {
+            if let Some(schema) = function_scope.get(id) {
+                return Ok(schema);
+            }
+        }
+        Err(Error::Undeclared)
+    }
+
+    fn get_fn(&self, id: Id) -> Result<TypeScheme> {
+        for function_scope in self.functions.iter().rev() {
+            if let Some(schema) = function_scope.get(id) {
+                return Ok(schema);
+            }
+        }
+        Err(Error::Undeclared)
+    }
+
     fn insert(&mut self, id: Id, ty: Type) {
         self.scopes
             .last_mut()
-            .expect("should have at least one scope open")
+            .expect("should be at least one scope open")
+            .insert(id.clone(), ty);
+    }
+
+    fn insert_fn(&mut self, id: Id, ty_scheme: TypeScheme) {
+        self.functions
+            .last_mut()
+            .expect("should be at least one scope open")
             .insert(id.clone(), ty);
     }
 }

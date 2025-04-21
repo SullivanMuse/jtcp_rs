@@ -1,152 +1,139 @@
-use std::{collections::HashMap, hash::Hash, rc::Rc};
+use std::collections::HashMap;
 
-type Id = Rc<str>;
-
+// types
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Error {
-    Undeclared,
+    Undefined,
+    ExpectedFn,
+    Unification,
 }
 
-type Result<T> = Result<T, Error>;
+type Id<'id> = &'id str;
 
-enum Statement {
-    Let(Id, Expr),
-    Assign(Id, Expr),
-    Expr(Expr),
-
-    // non-capturing unary function
-    Fn(Rc<str>, Id, Expr),
-}
-
-impl Statement {
-    fn infer(&self, context: &mut Context) -> Result<Type> {
-        match self {
-            Self::Let(id, expr) => {
-                let ty = expr.infer(context)?;
-                context.insert(id.clone(), ty);
-            }
-
-            Self::Assign(id, expr) => {
-                let ty = expr.infer(context)?;
-                context.get(&id);
-            }
-
-            Self::Expr(expr) => { expr.infer(context) }
-
-            Self::Fn(name, param, expr) => {
-                context.push();
-
-                context.pop();
-            }
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Expr {
-    Int(u64),
-    Block(Vec<Statement>),
-    Fn(Id, Expr),
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Expr<'id> {
+    Id(Id<'id>),
+    Fn(Id<'id>, Box<Self>),
+    Let(Id<'id>, Box<Self>, Box<Self>),
     Call(Box<Self>, Box<Self>),
 }
 
-impl Expr {
-    fn infer(&self, _context: &mut Context) -> Result<Type, ()> {
-        match self {
-            Self::Int(_) => Ok(Type::Int),
-            Self::Block(statements) => {
-                for statement in statements {
-                    match statement {
-                        Statement::Let(id, expr) => {
-                            let result = expr.infer(_context);
-                            match result {
+type Var = usize;
 
-                            }
-                        }
-                    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Type {
+    Var(Var),
+    Fn(Box<Self>, Box<Self>),
+}
+
+type Unifier = HashMap<Var, Type>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Context<'id> {
+    vars: usize,
+    types: Vec<(Id<'id>, Type)>,
+}
+
+// functions
+impl<'id> Expr<'id> {
+    fn infer(&self, context: &mut Context<'id>) -> Result<Type, Error> {
+        match self {
+            Self::Id(id) => context.get(id).map(|ty| ty.clone()),
+            Self::Let(k, v, body) => {
+                let ty = v.infer(context)?;
+                context.insert(k, ty);
+                let result = body.infer(context);
+                context.pop();
+                result
+            }
+            Self::Fn(x, body) => {
+                let k = context.fresh();
+                context.insert(x, k.clone());
+                let ty = body.infer(context)?;
+                context.pop();
+                Ok(Type::Fn(Box::new(k), Box::new(ty)))
+            }
+            Self::Call(f, x) => {
+                let f_ty = f.infer(context)?;
+                if let Type::Fn(param_ty, mut body_ty) = f_ty {
+                    let x_ty = x.infer(context)?;
+                    let mut unifier = HashMap::new();
+                    param_ty.unify(&x_ty, &mut unifier)?;
+                    body_ty.subst(&unifier);
+                    Ok(*body_ty)
+                } else {
+                    Err(Error::ExpectedFn)
                 }
-                todo!()
             }
         }
     }
 }
 
-struct TypeScheme {
-    params: usize,
-    ty: Type,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Type {
-    Var(usize),
-    Int,
-
-    // sentinel for unknown type
-    Unknown,
-}
-
-struct Context {
-    type_var_count: usize,
-    functions: Vec<HashMap<Id, TypeScheme>>,
-    scopes: Vec<HashMap<Id, Type>>,
-    errors: Vec<()>,
-}
-
-impl Context {
-    fn new() -> Self {
-        Self {
-            type_var_count: 0,
-            functions: vec![HashMap::new()],
-            scopes: vec![HashMap::new()],
-            errors: vec![],
+impl Type {
+    fn unify(&self, other: &Self, unifier: &mut Unifier) -> Result<(), Error> {
+        match (self, other) {
+            (Self::Var(v1), other) => {
+                if let Self::Var(v2) = other {
+                    if v1 == v2 {
+                        return Ok(());
+                    }
+                }
+                unifier.insert(*v1, other.clone());
+                Ok(())
+            }
+            (Self::Fn(k1, v1), Self::Fn(k2, v2)) => {
+                k1.unify(k2, unifier)?;
+                v1.unify(v2, unifier)?;
+                Ok(())
+            }
+            _ => Err(Error::Unification),
         }
     }
 
-    fn push() {
-        self.functions.push(HashMap::new());
-        self.scopes.push(HashMap::new());
+    fn subst(&mut self, unifier: &Unifier) {
+        match self {
+            Type::Var(var) => {
+                if let Some(ty) = unifier.get(var) {
+                    *self = ty.clone();
+                }
+            }
+            Type::Fn(k, v) => {
+                k.subst(unifier);
+                v.subst(unifier);
+            }
+        }
     }
+}
 
-    fn pop() {
-        self.functions.pop();
-        self.scopes.pop();
+impl<'id> Context<'id> {
+    fn new() -> Self {
+        Self {
+            vars: 0,
+            types: Vec::new(),
+        }
     }
 
     fn fresh(&mut self) -> Type {
-        let index = self.var_count;
-        self.var_count += 1;
-        Type::Var(index)
+        let out = self.vars;
+        self.vars += 1;
+        Type::Var(out)
     }
 
-    fn get(&self) -> Result<Type> {
-        for function_scope in self.functions.iter().rev() {
-            if let Some(schema) = function_scope.get(id) {
-                return Ok(schema);
+    fn get(&self, id: Id<'id>) -> Result<&Type, Error> {
+        for (k, v) in self.types.iter().rev() {
+            if *k == id {
+                return Ok(v);
             }
         }
-        Err(Error::Undeclared)
+        Err(Error::Undefined)
     }
 
-    fn get_fn(&self, id: Id) -> Result<TypeScheme> {
-        for function_scope in self.functions.iter().rev() {
-            if let Some(schema) = function_scope.get(id) {
-                return Ok(schema);
-            }
-        }
-        Err(Error::Undeclared)
+    fn pop(&mut self) {
+        self.types.pop().expect("pop must follow insert");
     }
 
-    fn insert(&mut self, id: Id, ty: Type) {
-        self.scopes
-            .last_mut()
-            .expect("should be at least one scope open")
-            .insert(id.clone(), ty);
-    }
-
-    fn insert_fn(&mut self, id: Id, ty_scheme: TypeScheme) {
-        self.functions
-            .last_mut()
-            .expect("should be at least one scope open")
-            .insert(id.clone(), ty);
+    fn insert(&mut self, id: Id<'id>, ty: Type) {
+        self.types.push((id, ty));
     }
 }
 
@@ -155,12 +142,129 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_int() {
+    fn test_undefined1() {
         let mut context = Context::new();
-        assert_eq!(Expr::Int(123).infer(&mut context), Ok(Type::Int));
+        let e = Expr::Id("xyz");
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Err(Error::Undefined),
+            "use of undefined variable results in type error"
+        );
+    }
+
+    #[test]
+    fn test_undefined2() {
+        // y -> let id = x -> x; id x
+        let mut context = Context::new();
+        let e = Expr::Fn(
+            "y",
+            Box::new(Expr::Let(
+                "id",
+                Box::new(Expr::Fn("x", Box::new(Expr::Id("x")))),
+                Box::new(Expr::Call(
+                    Box::new(Expr::Id("id")),
+                    Box::new(Expr::Id("x")),
+                )),
+            )),
+        );
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Err(Error::Undefined),
+            "use of variable defined in inner scope"
+        );
+    }
+
+    #[test]
+    fn infer_ident_fn() {
+        let mut context = Context::new();
+        let e = Expr::Fn("x", Box::new(Expr::Id("x")));
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Ok(Type::Fn(Box::new(Type::Var(0)), Box::new(Type::Var(0)))),
+            "identity function has correct type"
+        );
+    }
+
+    #[test]
+    fn test_let() {
+        let mut context = Context::new();
+        let id = Expr::Fn("x", Box::new(Expr::Id("x")));
+        let e = Expr::Let("id", Box::new(id), Box::new(Expr::Id("id")));
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Ok(Type::Fn(Box::new(Type::Var(0)), Box::new(Type::Var(0)))),
+            "use of let var results in type substitution"
+        );
+    }
+
+    #[test]
+    fn test_identity_identity() {
+        // y -> let id = x -> x; id id
+        let mut context = Context::new();
+        let e = Expr::Fn(
+            "y",
+            Box::new(Expr::Let(
+                "id",
+                Box::new(Expr::Fn("x", Box::new(Expr::Id("x")))),
+                Box::new(Expr::Call(
+                    Box::new(Expr::Id("id")),
+                    Box::new(Expr::Id("id")),
+                )),
+            )),
+        );
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Ok(Type::Fn(
+                Box::new(Type::Var(0)),
+                Box::new(Type::Fn(Box::new(Type::Var(1)), Box::new(Type::Var(1))))
+            )),
+            "ident of ident has ident type"
+        )
+    }
+
+    #[test]
+    fn test_identity_application() {
+        // y -> let id = x -> x; id y
+        let mut context = Context::new();
+        let e = Expr::Fn(
+            "y",
+            Box::new(Expr::Let(
+                "id",
+                Box::new(Expr::Fn("x", Box::new(Expr::Id("x")))),
+                Box::new(Expr::Call(
+                    Box::new(Expr::Id("id")),
+                    Box::new(Expr::Id("y")),
+                )),
+            )),
+        );
+        let result = e.infer(&mut context);
+        assert_eq!(
+            result,
+            Ok(Type::Fn(Box::new(Type::Var(0)), Box::new(Type::Var(0)))),
+            "ident of var has var type"
+        )
     }
 }
 
 fn main() {
-    println!("Hello, world!");
+    // y -> let id = x -> x; id x
+    let mut context = Context::new();
+    let e = Expr::Fn(
+        "y",
+        Box::new(Expr::Let(
+            "id",
+            Box::new(Expr::Fn("x", Box::new(Expr::Id("x")))),
+            Box::new(Expr::Call(
+                Box::new(Expr::Id("id")),
+                Box::new(Expr::Id("x")),
+            )),
+        )),
+    );
+    let result = e.infer(&mut context);
+    let _ = dbg!(result);
 }

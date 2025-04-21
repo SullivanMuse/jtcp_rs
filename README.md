@@ -1,2 +1,3 @@
-# type_checker_ref_rs
-Reference implementation of a type checker.
+# jtcp_rs
+
+Just the type checker please, RS. This is a project to demonstrate type-checking algorithms, only.
